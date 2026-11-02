@@ -67,6 +67,12 @@ async function pollButtons() {
       await tgApi("answerCallbackQuery", { callback_query_id: cq.id, text: "Нет доступа" });
       continue;
     }
+    // Кнопка из сообщения старше 30 минут не исполняется: обстановка могла смениться
+    if (Date.now() / 1000 - (cq.message?.date ?? 0) > 30 * 60) {
+      await tgApi("editMessageReplyMarkup", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
+      await tgApi("answerCallbackQuery", { callback_query_id: cq.id, text: "Кнопка устарела, дождись нового сообщения" });
+      continue;
+    }
     await tgApi("editMessageReplyMarkup", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
     let note = LABELS[cq.data];
     if (cq.data !== "fo:wait") {
@@ -83,6 +89,7 @@ async function pollButtons() {
   }
 }
 await pollButtons();
+writeFileSync(STATE_FILE, JSON.stringify(state));   // смещение Telegram не должно потеряться при сбое ниже
 const local = await Promise.all(targets.map((t) => check(t.url)));
 const remote = await probeRemote(targets.map((t) => t.url));
 
@@ -133,13 +140,14 @@ const VPS = "Beget: наш VPS";
 const HOUR = 3600_000;
 const now = Date.now();
 const vps = state[VPS];
-if (env("MWS_GATE") && vps && !ruLost) {
+if (env("MWS_GATE") && vps && !ruLost) try {
   const fo = mwsStatus();
   console.log(`MWS: reachable=${fo.reachable} mode=${fo.mode} since=${fo.since ?? "-"}`);
   if (vps.up) state.__offeredUp = 0;
   if (!vps.up) state.__offeredDown = 0;
 
-  if (!vps.up && fo.mode !== "active" && now - (state.__offeredUp || 0) > HOUR) {
+  // switching/returning - переключение уже идёт; active - сайты уже на MWS
+  if (!vps.up && ["standby", "returned"].includes(fo.mode) && now - (state.__offeredUp || 0) > HOUR) {
     await telegram("🔴 Beget не отвечает. Переключить сайты на резервный MWS? Данные будут из последнего ночного снимка Beget.",
       [["Переключить на MWS", "fo:up"], ["Ждать", "fo:wait"]]);
     state.__offeredUp = now;
@@ -162,6 +170,12 @@ if (env("MWS_GATE") && vps && !ruLost) {
       await telegram(`MWS пока не ставлю на паузу. Посетителей за 30 мин: ${visits}. Новое на MWS после возврата:\n${delta || "нет"}\nЕсли там заказы или заявки - их надо перенести на Beget руками.`);
       state.__pauseHeld = now;
     }
+  }
+} catch (e) {
+  console.error("блок переключения:", e);
+  if (now - (state.__foErr || 0) > 6 * HOUR) {
+    await telegram(`Дозор: ошибка в блоке переключения: ${String(e.message).slice(0, 200)}`);
+    state.__foErr = now;
   }
 }
 
