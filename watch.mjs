@@ -59,8 +59,9 @@ async function tgApi(method, body) {
 async function pollButtons() {
   if (!env("TG_TOKEN")) return;
   const r = await tgApi("getUpdates", { offset: state.__tgOffset || 0, timeout: 0, allowed_updates: ["callback_query"] });
-  for (const u of r.result ?? []) {
+  for (const u of r.result ?? []) try {
     state.__tgOffset = u.update_id + 1;
+    writeFileSync(STATE_FILE, JSON.stringify(state));   // каждое нажатие обрабатывается не больше одного раза
     const cq = u.callback_query;
     if (!cq) continue;
     if (String(cq.from?.id) !== env("TG_CHAT") || !LABELS[cq.data]) {
@@ -86,6 +87,8 @@ async function pollButtons() {
     await tgApi("answerCallbackQuery", { callback_query_id: cq.id, text: note });
     await tgApi("sendMessage", { chat_id: cq.message.chat.id, text: `Принято: ${note}`, reply_to_message_id: cq.message.message_id });
     console.log(`кнопка ${cq.data}: ${note}`);
+  } catch (e) {
+    console.error("кнопка:", e);   // сбой одного нажатия не роняет весь запуск дозора
   }
 }
 await pollButtons();
