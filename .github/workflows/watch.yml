@@ -1,0 +1,34 @@
+name: watch
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: watch
+  cancel-in-progress: false
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: state.json
+          key: watch-state-${{ github.run_id }}
+          restore-keys: watch-state-
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node watch.mjs
+        env:
+          TARGETS: ${{ secrets.TARGETS }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          PROBE_URL: ${{ secrets.PROBE_URL }}
+          PROBE_KEY: ${{ secrets.PROBE_KEY }}
+      - uses: actions/cache/save@v4
+        if: always()
+        with:
+          path: state.json
+          key: watch-state-${{ github.run_id }}
