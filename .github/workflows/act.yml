@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       cmd:
-        description: "up | down"
+        description: "up | down | status"
         required: true
 concurrency:
   group: act

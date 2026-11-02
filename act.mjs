@@ -1,4 +1,4 @@
-// Действие по кнопке из Telegram (workflow act.yml, вход CMD = up | down).
+// Действие по кнопке из Telegram (workflow act.yml, вход CMD = up | down | status).
 import { getVm, powerOf, setPower, gate, mwsStatus } from "./mws.mjs";
 
 const env = (n) => process.env[n] ?? "";
@@ -24,6 +24,13 @@ try {
     console.log(gate("up"));   // дальше failover-ctl сам пишет в Telegram о каждом шаге
   } else if (cmd === "down") {
     console.log(gate("down"));
+  } else if (cmd === "status") {   // проверка цепочки: MWS API (питание ВМ) + вход по ключу дозора
+    const power = powerOf(await getVm());
+    const st = mwsStatus();
+    const text = `Проверка цепочки дозора: ВМ MWS ${power}, вход по ключу ${st.reachable ? "есть" : "НЕТ"}.\n${st.reachable ? st.raw.trim() : ""}`;
+    console.log(text);
+    await telegram(text.slice(0, 3500));
+    if (power === "UNKNOWN" || !st.reachable) process.exit(1);
   } else {
     throw new Error(`неизвестная команда ${cmd}`);
   }
