@@ -1,6 +1,7 @@
 // Внешний дозор: проверяет адреса из секрета TARGETS с GitHub и со второй точки (Vercel),
 // пишет в Telegram только при смене состояния. Состояние между запусками - state.json (actions/cache).
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mwsStatus, gate, setPower } from "./mws.mjs";
 
 const env = (name) => process.env[name] ?? "";
 const targets = JSON.parse(env("TARGETS") || "[]"); // [{ name, url, any?: true, control?: true }]
@@ -33,17 +34,55 @@ async function probeRemote(urls) {
   }
 }
 
-async function telegram(text) {
+async function telegram(text, buttons) {
+  const reply_markup = buttons ? { inline_keyboard: [buttons.map(([t, d]) => ({ text: t, callback_data: d }))] } : undefined;
   const res = await fetch(`https://api.telegram.org/bot${env("TG_TOKEN")}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: env("TG_CHAT"), text, disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: env("TG_CHAT"), text, disable_web_page_preview: true, reply_markup }),
   });
   if (!res.ok) throw new Error(`telegram ${res.status}`);
 }
 
 const first = !existsSync(STATE_FILE);
 const state = first ? {} : JSON.parse(readFileSync(STATE_FILE, "utf8"));
+
+// Нажатия кнопок забираем сами (getUpdates при каждом запуске): реакция 5-15 минут, зато без токена GitHub
+// в Vercel. Мгновенный вариант - вебхук etern8-tg-relay/api/tg-hook, включить, когда будет токен GitHub.
+const LABELS = { "fo:up": "Переключаю на MWS", "fo:down": "Возвращаю на Beget", "fo:wait": "Жду, ничего не делаю" };
+async function tgApi(method, body) {
+  const res = await fetch(`https://api.telegram.org/bot${env("TG_TOKEN")}/${method}`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  return res.json().catch(() => ({}));
+}
+async function pollButtons() {
+  if (!env("TG_TOKEN")) return;
+  const r = await tgApi("getUpdates", { offset: state.__tgOffset || 0, timeout: 0, allowed_updates: ["callback_query"] });
+  for (const u of r.result ?? []) {
+    state.__tgOffset = u.update_id + 1;
+    const cq = u.callback_query;
+    if (!cq) continue;
+    if (String(cq.from?.id) !== env("TG_CHAT") || !LABELS[cq.data]) {
+      await tgApi("answerCallbackQuery", { callback_query_id: cq.id, text: "Нет доступа" });
+      continue;
+    }
+    await tgApi("editMessageReplyMarkup", { chat_id: cq.message.chat.id, message_id: cq.message.message_id, reply_markup: { inline_keyboard: [] } });
+    let note = LABELS[cq.data];
+    if (cq.data !== "fo:wait") {
+      const res = await fetch(`https://api.github.com/repos/${env("GITHUB_REPOSITORY")}/actions/workflows/act.yml/dispatches`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${env("GITHUB_TOKEN")}`, Accept: "application/vnd.github+json", "content-type": "application/json" },
+        body: JSON.stringify({ ref: "main", inputs: { cmd: cq.data.slice(3) } }),
+      });
+      if (!res.ok) note = `Не удалось запустить (${res.status})`;
+    }
+    await tgApi("answerCallbackQuery", { callback_query_id: cq.id, text: note });
+    await tgApi("sendMessage", { chat_id: cq.message.chat.id, text: `Принято: ${note}`, reply_to_message_id: cq.message.message_id });
+    console.log(`кнопка ${cq.data}: ${note}`);
+  }
+}
+await pollButtons();
 const local = await Promise.all(targets.map((t) => check(t.url)));
 const remote = await probeRemote(targets.map((t) => t.url));
 
@@ -89,4 +128,41 @@ if (first) {
 } else if (changes.length) {
   await telegram(changes.join("\n"));
 }
+// ---- Переключение Beget <-> MWS: кнопки и автопауза. Режим берётся с самой MWS (failover-ctl status).
+const VPS = "Beget: наш VPS";
+const HOUR = 3600_000;
+const now = Date.now();
+const vps = state[VPS];
+if (env("MWS_GATE") && vps && !ruLost) {
+  const fo = mwsStatus();
+  console.log(`MWS: reachable=${fo.reachable} mode=${fo.mode} since=${fo.since ?? "-"}`);
+  if (vps.up) state.__offeredUp = 0;
+  if (!vps.up) state.__offeredDown = 0;
+
+  if (!vps.up && fo.mode !== "active" && now - (state.__offeredUp || 0) > HOUR) {
+    await telegram("🔴 Beget не отвечает. Переключить сайты на резервный MWS? Данные будут из последнего ночного снимка Beget.",
+      [["Переключить на MWS", "fo:up"], ["Ждать", "fo:wait"]]);
+    state.__offeredUp = now;
+  }
+  if (vps.up && fo.mode === "active" && now - (state.__offeredDown || 0) > 6 * HOUR) {
+    await telegram("✅ Beget снова отвечает, а сайты на MWS. Вернуть на Beget? Базы MWS переедут на Beget, прежние базы Beget сохранятся рядом.",
+      [["Вернуть на Beget", "fo:down"], ["Пока нет", "fo:wait"]]);
+    state.__offeredDown = now;
+  }
+  // Автопауза: через 2 ч после возврата, если на MWS нет новых заказов/заявок и почти нет посетителей
+  if (fo.mode === "returned" && fo.since && now - Date.parse(fo.since) > 2 * HOUR) {
+    const delta = gate("delta").trim();
+    const visits = parseInt(gate("visits"), 10) || 0;
+    console.log(`автопауза: delta=[${delta}] visits=${visits}`);
+    if (!delta && visits < 50) {
+      gate("standby");
+      const r = await setPower("OFF");
+      await telegram(`MWS поставлен на паузу (${r}): после возврата новых заказов и заявок на нём нет, посетителей за 30 мин ${visits}.`);
+    } else if (now - (state.__pauseHeld || 0) > 6 * HOUR) {
+      await telegram(`MWS пока не ставлю на паузу. Посетителей за 30 мин: ${visits}. Новое на MWS после возврата:\n${delta || "нет"}\nЕсли там заказы или заявки - их надо перенести на Beget руками.`);
+      state.__pauseHeld = now;
+    }
+  }
+}
+
 writeFileSync(STATE_FILE, JSON.stringify(state));

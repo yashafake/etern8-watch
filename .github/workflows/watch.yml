@@ -6,10 +6,13 @@ on:
 concurrency:
   group: watch
   cancel-in-progress: false
+permissions:
+  contents: read
+  actions: write
 jobs:
   watch:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/cache/restore@v4
@@ -20,6 +23,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: |
+          umask 077
+          printf '%s\n' "$MWS_GATE" > gate_key
+        env:
+          MWS_GATE: ${{ secrets.MWS_GATE }}
       - run: node watch.mjs
         env:
           TARGETS: ${{ secrets.TARGETS }}
@@ -27,6 +35,9 @@ jobs:
           TG_CHAT: ${{ secrets.TG_CHAT }}
           PROBE_URL: ${{ secrets.PROBE_URL }}
           PROBE_KEY: ${{ secrets.PROBE_KEY }}
+          MWS_GATE: ${{ secrets.MWS_GATE }}
+          MWS_SA_KEY: ${{ secrets.MWS_SA_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/cache/save@v4
         if: always()
         with:

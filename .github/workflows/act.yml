@@ -1,0 +1,30 @@
+name: act
+on:
+  workflow_dispatch:
+    inputs:
+      cmd:
+        description: "up | down"
+        required: true
+concurrency:
+  group: act
+  cancel-in-progress: false
+jobs:
+  act:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: |
+          umask 077
+          printf '%s\n' "$MWS_GATE" > gate_key
+        env:
+          MWS_GATE: ${{ secrets.MWS_GATE }}
+      - run: node act.mjs
+        env:
+          CMD: ${{ inputs.cmd }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT: ${{ secrets.TG_CHAT }}
+          MWS_SA_KEY: ${{ secrets.MWS_SA_KEY }}
