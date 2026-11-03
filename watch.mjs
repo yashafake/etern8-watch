@@ -2,6 +2,7 @@
 // пишет в Telegram только при смене состояния. Состояние между запусками - state.json (actions/cache).
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { mwsStatus, gate, setPower } from "./mws.mjs";
+import { connect } from "node:net";
 
 const env = (name) => process.env[name] ?? "";
 const targets = JSON.parse(env("TARGETS") || "[]"); // [{ name, url, any?: true, control?: true }]
@@ -92,6 +93,34 @@ async function pollButtons() {
   }
 }
 await pollButtons();
+// ---- Почта Beget (02.11 лежит вместе с VPS): от неё зависят ящики доменов etern8 и рассылка.
+// Проверяем, принимает ли сервер подключения (SMTP 465, IMAP 993); пишем только при смене состояния.
+function tcpOpen(host, port, ms = 7000) {
+  return new Promise((resolve) => {
+    const sock = connect({ host, port });
+    const done = (ok) => { sock.destroy(); resolve(ok); };
+    sock.setTimeout(ms, () => done(false));
+    sock.once("connect", () => done(true));
+    sock.once("error", () => done(false));
+  });
+}
+try {
+  const ports = [["smtp.beget.com", 465], ["imap.beget.com", 993]];
+  const res = [];
+  for (const [h, p] of ports) res.push((await tcpOpen(h, p)) || (await tcpOpen(h, p)));
+  const mailUp = res.every(Boolean);
+  if (state.__begetMail === undefined) state.__begetMail = mailUp;
+  else if (mailUp !== state.__begetMail) {
+    state.__begetMail = mailUp;
+    await telegram(mailUp
+      ? "📬 Почта Beget снова принимает подключения (SMTP 465, IMAP 993). Можно возвращать ящики и рассылку: напиши Claude."
+      : "📪 Почта Beget снова не отвечает (SMTP 465 / IMAP 993).");
+  }
+  console.log("почта Beget:", ports.map(([h, p], i) => `${h}:${p}=${res[i] ? "ok" : "нет"}`).join(" "));
+} catch (e) {
+  console.error("проверка почты Beget:", e);
+}
+
 writeFileSync(STATE_FILE, JSON.stringify(state));   // смещение Telegram не должно потеряться при сбое ниже
 const local = await Promise.all(targets.map((t) => check(t.url)));
 const remote = await probeRemote(targets.map((t) => t.url));
