@@ -3,17 +3,33 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { mwsStatus, gate, setPower } from "./mws.mjs";
 import { connect } from "node:net";
+import { request as httpsRequest } from "node:https";
 
 const env = (name) => process.env[name] ?? "";
 const targets = JSON.parse(env("TARGETS") || "[]"); // [{ name, url, any?: true, control?: true }]
-// Основной сервер с 05.11.2026 - FirstVDS. Проверяется по IP (не по домену: при переключении домены уходят на MWS).
-const PRIMARY = { name: "FirstVDS: основной сервер", url: "http://168.113.188.12/" };
+// Основной сервер с 05.11.2026 - FirstVDS. Проверяется ответ ПРИЛОЖЕНИЯ (https IWANT с привязкой к IP), а не nginx:
+// http://IP отвечает 301 даже при мёртвых приложениях. По домену нельзя: при переключении домены уходят на MWS.
+// Только с GitHub (вторая точка Vercel не умеет привязку к IP); решение всё равно за кнопкой и main_alive на MWS.
+const PRIMARY = { name: "FirstVDS: основной сервер", url: "https://iwantconcept.store/", ip: "168.113.188.12", localOnly: true };
 if (!targets.some((t) => t.name === PRIMARY.name)) targets.push(PRIMARY);
 const MWS_TARGET = "MWS резерв";   // пока MWS в ожидании (на паузе), его недоступность - не тревога
 const FAILS_TO_ALERT = 2;
 const STATE_FILE = "state.json";
 
-async function check(url) {
+// https на заданный IP с SNI и Host домена (как curl --resolve)
+function checkVia(url, ip) {
+  return new Promise((resolve) => {
+    const u = new URL(url);
+    const req = httpsRequest({ host: ip, servername: u.hostname, headers: { host: u.hostname }, path: u.pathname, method: "GET", timeout: 15000 },
+      (res) => { res.resume(); resolve(res.statusCode ?? 0); });
+    req.on("timeout", () => { req.destroy(); resolve(0); });
+    req.on("error", () => resolve(0));
+    req.end();
+  });
+}
+
+async function check(url, ip) {
+  if (ip) return checkVia(url, ip);
   try {
     const res = await fetch(url, { redirect: "manual", signal: AbortSignal.timeout(15000) });
     return res.status;
@@ -126,8 +142,10 @@ try {
 }
 
 writeFileSync(STATE_FILE, JSON.stringify(state));   // смещение Telegram не должно потеряться при сбое ниже
-const local = await Promise.all(targets.map((t) => check(t.url)));
-const remote = await probeRemote(targets.map((t) => t.url));
+const local = await Promise.all(targets.map((t) => check(t.url, t.ip)));
+const remoteAll = await probeRemote(targets.filter((t) => !t.localOnly).map((t) => t.url));
+// цель с привязкой к IP вторая точка не проверяет: её ответ по тому же URL пришёл бы через DNS (с MWS)
+const remote = remoteAll && Object.fromEntries(targets.filter((t) => !t.localOnly && remoteAll[t.url] !== undefined).map((t) => [t.url, remoteAll[t.url]]));
 
 // Контрольные адреса (например ya.ru): если не видны ни с одной точки, пропала связь с РФ,
 // а не упали наши серверы. Тогда не тревожим по каждому адресу, а пишем одно сообщение.
@@ -183,8 +201,20 @@ const now = Date.now();
 const vps = state[VPS];
 if (env("MWS_GATE") && vps && !ruLost) try {
   const fo = mwsStatus();
+  // недоступна MWS: на паузе (была standby/returned) или упала, обслуживая сайты (active и т.п.) - тогда режим не терять
+  if (!fo.reachable && state.__foMode && !["standby", "returned"].includes(state.__foMode)) fo.mode = state.__foMode;
   console.log(`MWS: reachable=${fo.reachable} mode=${fo.mode} since=${fo.since ?? "-"}`);
+  if (!fo.reachable && fo.mode === "active" && now - (state.__mwsLost || 0) > HOUR) {
+    await telegram("🔴 Сайты на MWS (режим active), а MWS не отвечает по SSH. Проверь MWS в панели MWS Cloud.");
+    state.__mwsLost = now;
+  }
   state.__foMode = fo.mode;
+  // переключение зависло (процесс убит, ВМ перезагрузилась): switching/returning дольше 30 минут
+  if (fo.reachable && ["switching", "returning"].includes(fo.mode) && fo.since && now - Date.parse(fo.since) > 30 * 60_000
+      && now - (state.__foStuck || 0) > 3 * HOUR) {
+    await telegram(`⚠️ MWS в режиме ${fo.mode} больше 30 минут: переключение, похоже, оборвалось. Посмотреть: failover-ctl status и /var/log/failover.log на MWS; сбросить: failover-ctl reset-mode.`);
+    state.__foStuck = now;
+  }
   if (vps.up) state.__offeredUp = 0;
   if (!vps.up) state.__offeredDown = 0;
 
