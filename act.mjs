@@ -1,4 +1,4 @@
-// Действие по кнопке из Telegram (workflow act.yml, вход CMD = up | down | status).
+// Действие по кнопке из Telegram (workflow act.yml, вход CMD = up | down | status | pause).
 import { getVm, powerOf, setPower, gate, mwsStatus } from "./mws.mjs";
 
 const env = (n) => process.env[n] ?? "";
@@ -24,6 +24,12 @@ try {
     console.log(gate("up"));   // дальше failover-ctl сам пишет в Telegram о каждом шаге
   } else if (cmd === "down") {
     console.log(gate("down"));
+  } else if (cmd === "pause") {   // MWS в ожидание и выключить ВМ (только из standby/returned, иначе failover-ctl откажет)
+    const out = gate("standby");
+    console.log(out);
+    if (/отказ/.test(out)) throw new Error(out.trim());
+    const r = await setPower("OFF");
+    await telegram(`MWS поставлен на паузу (${r}). Если FirstVDS упадёт, дозор предложит переключение и включит MWS сам.`);
   } else if (cmd === "status") {   // проверка цепочки: MWS API (питание ВМ) + вход по ключу дозора
     const power = powerOf(await getVm());
     const st = mwsStatus();

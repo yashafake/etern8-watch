@@ -6,6 +6,10 @@ import { connect } from "node:net";
 
 const env = (name) => process.env[name] ?? "";
 const targets = JSON.parse(env("TARGETS") || "[]"); // [{ name, url, any?: true, control?: true }]
+// Основной сервер с 05.11.2026 - FirstVDS. Проверяется по IP (не по домену: при переключении домены уходят на MWS).
+const PRIMARY = { name: "FirstVDS: основной сервер", url: "http://168.113.188.12/" };
+if (!targets.some((t) => t.name === PRIMARY.name)) targets.push(PRIMARY);
+const MWS_TARGET = "MWS резерв";   // пока MWS в ожидании (на паузе), его недоступность - не тревога
 const FAILS_TO_ALERT = 2;
 const STATE_FILE = "state.json";
 
@@ -50,7 +54,7 @@ const state = first ? {} : JSON.parse(readFileSync(STATE_FILE, "utf8"));
 
 // Нажатия кнопок забираем сами (getUpdates при каждом запуске): реакция 5-15 минут, зато без токена GitHub
 // в Vercel. Мгновенный вариант - вебхук etern8-tg-relay/api/tg-hook, включить, когда будет токен GitHub.
-const LABELS = { "fo:up": "Переключаю на MWS", "fo:down": "Возвращаю на Beget", "fo:wait": "Жду, ничего не делаю" };
+const LABELS = { "fo:up": "Переключаю на MWS", "fo:down": "Возвращаю на FirstVDS", "fo:wait": "Жду, ничего не делаю" };
 async function tgApi(method, body) {
   const res = await fetch(`https://api.telegram.org/bot${env("TG_TOKEN")}/${method}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -141,6 +145,11 @@ targets.forEach((t, i) => {
     console.log(`${t.name}: пропущен (нет связи с РФ)`);
     return;
   }
+  if (t.name === MWS_TARGET && state.__foMode !== "active") {
+    state[t.name] = { up: true, fails: 0 };
+    console.log(`${t.name}: пропущен (MWS в ожидании: ${state.__foMode ?? "?"})`);
+    return;
+  }
   const s = state[t.name] ?? { up: true, fails: 0 };
   const remoteStatus = remote?.[t.url];
   // Упавшим считаем, только если не отвечает с обеих точек (или вторая точка сама недоступна).
@@ -167,26 +176,27 @@ if (first) {
 } else if (changes.length) {
   await telegram(changes.join("\n"));
 }
-// ---- Переключение Beget <-> MWS: кнопки и автопауза. Режим берётся с самой MWS (failover-ctl status).
-const VPS = "Beget: наш VPS";
+// ---- Переключение FirstVDS <-> MWS: кнопки и автопауза. Режим берётся с самой MWS (failover-ctl status).
+const VPS = PRIMARY.name;
 const HOUR = 3600_000;
 const now = Date.now();
 const vps = state[VPS];
 if (env("MWS_GATE") && vps && !ruLost) try {
   const fo = mwsStatus();
   console.log(`MWS: reachable=${fo.reachable} mode=${fo.mode} since=${fo.since ?? "-"}`);
+  state.__foMode = fo.mode;
   if (vps.up) state.__offeredUp = 0;
   if (!vps.up) state.__offeredDown = 0;
 
   // switching/returning - переключение уже идёт; active - сайты уже на MWS
   if (!vps.up && ["standby", "returned"].includes(fo.mode) && now - (state.__offeredUp || 0) > HOUR) {
-    await telegram("🔴 Beget не отвечает. Переключить сайты на резервный MWS? Данные будут из последнего ночного снимка Beget.",
+    await telegram("🔴 FirstVDS (основной сервер) не отвечает. Переключить сайты на резервный MWS? Данные будут из последнего ночного снимка FirstVDS, MWS включится из паузы сам (до 6 минут).",
       [["Переключить на MWS", "fo:up"], ["Ждать", "fo:wait"]]);
     state.__offeredUp = now;
   }
   if (vps.up && fo.mode === "active" && now - (state.__offeredDown || 0) > 6 * HOUR) {
-    await telegram("✅ Beget снова отвечает, а сайты на MWS. Вернуть на Beget? Базы MWS переедут на Beget, прежние базы Beget сохранятся рядом.",
-      [["Вернуть на Beget", "fo:down"], ["Пока нет", "fo:wait"]]);
+    await telegram("✅ FirstVDS снова отвечает, а сайты на MWS. Вернуть на FirstVDS? Базы MWS переедут на FirstVDS, прежние базы FirstVDS сохранятся рядом.",
+      [["Вернуть на FirstVDS", "fo:down"], ["Пока нет", "fo:wait"]]);
     state.__offeredDown = now;
   }
   // Автопауза: через 2 ч после возврата, если на MWS нет новых заказов/заявок и почти нет посетителей
@@ -199,7 +209,7 @@ if (env("MWS_GATE") && vps && !ruLost) try {
       const r = await setPower("OFF");
       await telegram(`MWS поставлен на паузу (${r}): после возврата новых заказов и заявок на нём нет, посетителей за 30 мин ${visits}.`);
     } else if (now - (state.__pauseHeld || 0) > 6 * HOUR) {
-      await telegram(`MWS пока не ставлю на паузу. Посетителей за 30 мин: ${visits}. Новое на MWS после возврата:\n${delta || "нет"}\nЕсли там заказы или заявки - их надо перенести на Beget руками.`);
+      await telegram(`MWS пока не ставлю на паузу. Посетителей за 30 мин: ${visits}. Новое на MWS после возврата:\n${delta || "нет"}\nЕсли там заказы или заявки - их надо перенести на FirstVDS руками.`);
       state.__pauseHeld = now;
     }
   }
