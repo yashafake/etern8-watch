@@ -204,8 +204,8 @@ if (env("MWS_GATE") && vps && !ruLost) try {
   // недоступна MWS: на паузе (была standby/returned) или упала, обслуживая сайты (active и т.п.) - тогда режим не терять
   if (!fo.reachable && state.__foMode && !["standby", "returned"].includes(state.__foMode)) fo.mode = state.__foMode;
   console.log(`MWS: reachable=${fo.reachable} mode=${fo.mode} since=${fo.since ?? "-"}`);
-  if (!fo.reachable && fo.mode === "active" && now - (state.__mwsLost || 0) > HOUR) {
-    await telegram("🔴 Сайты на MWS (режим active), а MWS не отвечает по SSH. Проверь MWS в панели MWS Cloud.");
+  if (!fo.reachable && ["active", "switching", "returning"].includes(fo.mode) && now - (state.__mwsLost || 0) > HOUR) {
+    await telegram(`🔴 MWS в режиме ${fo.mode} (сайты на ней или переключаются), а MWS не отвечает по SSH. Проверь MWS в панели MWS Cloud.`);
     state.__mwsLost = now;
   }
   state.__foMode = fo.mode;
