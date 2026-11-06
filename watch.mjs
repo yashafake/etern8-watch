@@ -12,6 +12,10 @@ const targets = JSON.parse(env("TARGETS") || "[]"); // [{ name, url, any?: true,
 // Только с GitHub (вторая точка Vercel не умеет привязку к IP); решение всё равно за кнопкой и main_alive на MWS.
 const PRIMARY = { name: "FirstVDS: основной сервер", url: "https://iwantconcept.store/", ip: "168.113.188.12", localOnly: true };
 if (!targets.some((t) => t.name === PRIMARY.name)) targets.push(PRIMARY);
+// Вседоматут: адрес с ответом приложения, а не редирект nginx с vsedomatut.ru (301 приходит и при упавшем приложении).
+// Только тревога: кнопки переключения завязаны на PRIMARY, резервом Вседоматут не покрыт.
+const VSEDOMATUT = { name: "Вседоматут: приложение", url: "https://xn--80adgd0blsnaj.xn--p1ai/" };
+if (!targets.some((t) => t.name === VSEDOMATUT.name)) targets.push(VSEDOMATUT);
 const MWS_TARGET = "MWS резерв";   // пока MWS в ожидании (на паузе), его недоступность - не тревога
 const FAILS_TO_ALERT = 2;
 const STATE_FILE = "state.json";
