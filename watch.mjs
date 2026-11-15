@@ -10,6 +10,14 @@ const targets = JSON.parse(env("TARGETS") || "[]"); // [{ name, url, any?: true,
 // Основной сервер с 05.11.2026 - FirstVDS. Проверяется ответ ПРИЛОЖЕНИЯ (https IWANT с привязкой к IP), а не nginx:
 // http://IP отвечает 301 даже при мёртвых приложениях. По домену нельзя: при переключении домены уходят на MWS.
 // Только с GitHub (вторая точка Vercel не умеет привязку к IP); решение всё равно за кнопкой и main_alive на MWS.
+// 15.11.2026: Beget утрачен (наш VPS не вернётся), в секрете TARGETS остались его адреса. Не шлём по ним тревоги,
+// пока секрет не почищен: убираем наш VPS и beget.com, серверы клиентов переименовываем без слова Beget.
+const DROP = new Set(["Beget: наш VPS", "Beget: beget.com"]);
+const RENAME = { "Beget: сервер Khammy": "Khammy: сервер", "Beget: сервер Вседоматута": "Вседоматут: сервер" };
+for (let i = targets.length - 1; i >= 0; i--) {
+  if (DROP.has(targets[i].name)) targets.splice(i, 1);
+  else if (RENAME[targets[i].name]) targets[i].name = RENAME[targets[i].name];
+}
 const PRIMARY = { name: "FirstVDS: основной сервер", url: "https://iwantconcept.store/", ip: "168.113.188.12", localOnly: true };
 if (!targets.some((t) => t.name === PRIMARY.name)) targets.push(PRIMARY);
 // Вседоматут: адрес с ответом приложения, а не редирект nginx с vsedomatut.ru (301 приходит и при упавшем приложении).
